@@ -1,0 +1,181 @@
+pipeline {
+    agent any
+    tools{
+        jdk 'jdk17'
+        maven 'maven3'
+    }
+    
+    environment {
+    SCANNER_HOME = tool 'sonar-scanner'
+    }
+
+    stages {
+        stage('Git ') {
+            steps {
+                git branch: 'main', credentialsId: 'git-cred', url: 'https://github.com/Theekshana-se/Fullstackblogging-app.git'
+            }
+        }
+        
+        stage('Compile') {
+            steps {
+                sh "mvn compile"
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                sh "mvn test"
+            }
+        }
+        
+        stage('Trivy FS Scan') {
+            steps {
+                sh "trivy fs --format table -o fs.html ."
+            }
+        }
+        
+         stage('Sonarcub analysis') {
+            steps {
+                withSonarQubeEnv('sonar-server2') {
+                    sh '''$SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Blogging-app -Dsonar.projectKey=Blogging-app \
+-Dsonar.java.binaries=target/classes'''
+               }
+            }
+        }
+        
+         stage('Build and package') {
+            steps {
+                sh "mvn package"
+            }
+        }
+        
+         stage('publish artifacts') {
+            steps {
+              withMaven(globalMavenSettingsConfig: 'maven-settings', jdk: 'jdk17', maven: 'maven3', mavenSettingsConfig: '', traceability: true) {
+                   sh "mvn deploy"
+                }
+            }
+        }
+        
+          stage('docker build & tag') {
+            steps {
+                script{
+                withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                sh "docker build -t devopstk28/bloggingapp:latest ."
+               }
+              }
+            }
+        }
+        
+        stage('Trivy Image Scan') {
+            steps {
+                sh "trivy image --format table -o image.html devopstk28/bloggingapp:latest"
+            }
+        }
+        
+         stage('docker push') {
+            steps {
+                script{
+                withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                sh "docker push devopstk28/bloggingapp:latest"
+               }
+              }
+            }
+        }
+        
+         stage('k8-deploy') {
+            steps {
+                withKubeConfig(caCertificate: '', clusterName: ' theekshana-cluster', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://BD91C90F9EB82FB93748C208A1F8063A.gr7.us-east-1.eks.amazonaws.com') {
+                      sh "kubectl apply -f deployment-service.yml"
+                      sleep 20 
+               }
+            }
+        }
+        
+          stage('verify deployment') {
+            steps {
+                withKubeConfig(caCertificate: '', clusterName: ' theekshana-cluster', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://BD91C90F9EB82FB93748C208A1F8063A.gr7.us-east-1.eks.amazonaws.com') {
+                      sh "kubectl get pods"
+                      sh "kubectl get svc"
+                
+               }
+            }
+        
+        
+     post {
+        always {
+            script {
+                // Define the banner color based on pipeline status
+                def bannerColor = ''
+                if (PIPELINE_STATUS == 'SUCCESS') {
+                    bannerColor = '#28a745' // Green for success
+                } else if (PIPELINE_STATUS == 'FAILURE') {
+                    bannerColor = '#dc3545' // Red for failure
+                } else {
+                    bannerColor = '#ffc107' // Yellow for unstable
+                }
+
+                // Define the email body content
+                def emailBody = """
+                <html>
+                    <head>
+                        <style>
+                            .banner {
+                                padding: 10px;
+                                color: white;
+                                background-color: ${bannerColor};
+                                font-size: 16px;
+                                text-align: center;
+                            }
+                            .details {
+                                margin-top: 20px;
+                                font-family: Arial, sans-serif;
+                                font-size: 14px;
+                            }
+                            .details th, .details td {
+                                padding: 8px;
+                                text-align: left;
+                                border: 1px solid #ddd;
+                            }
+                            .details th {
+                                background-color: #f2f2f2;
+                            }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="banner">
+                            <strong>${OBNAME} - ${PIPELINE_STATUS}</strong>
+                        </div>
+                        <div class="details">
+                            <h3>Pipeline Details:</h3>
+                            <table>
+                                <tr><th>Build Name</th><td>${BUILDNAME}</td></tr>
+                                <tr><th>Pipeline Status</th><td>${PIPELINE_STATUS}</td></tr>
+                                <tr><th>Build URL</th><td><a href="${env.BUILD_URL}">${env.BUILD_URL}</a></td></tr>
+                                <tr><th>Git Branch</th><td>${env.GIT_BRANCH}</td></tr>
+                                <tr><th>Commit ID</th><td>${env.GIT_COMMIT}</td></tr>
+                            </table>
+                        </div>
+                    </body>
+                </html>
+                """
+
+                // Send the email using emailext
+                emailext (
+                    subject: "Pipeline Status: ${OBNAME} - ${PIPELINE_STATUS}",
+                    body: emailBody,
+                    to: 'nayanajiththeekshana40@gmail.com',
+                    from: 'jenkins@example.com',
+                    replyTo: 'jenkins@example.com' ,
+                    mimeType: 'text/html', // Email content type
+                    attachLog: true, // Attach Jenkins logs to the email
+                    attachmentsPattern: '**/*.html', // Attach any HTML reports if needed
+                    sendToDevelopers: false, // Send to developers automatically (can be set to true if needed)
+                    notifyEveryUnstableBuild: true // Send notifications for unstable builds
+                )
+            }
+        }
+        
+    }
+}
+}
